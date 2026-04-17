@@ -72,6 +72,13 @@ st.markdown(
     div[data-testid="stButton"] > button[kind="secondary"] {
         display: none;
     }
+
+    /* Make disabled prompt template text area fully readable */
+    textarea[disabled], textarea:disabled {
+        color: #111827 !important;
+        -webkit-text-fill-color: #111827 !important;
+        opacity: 1 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -226,7 +233,6 @@ def _init_session() -> None:
     st.session_state.session_id            = str(uuid.uuid4())
     st.session_state.selected_prompt_id    = None
     st.session_state.current_page          = 1
-    st.session_state.search_text           = ""
     st.session_state.selected_categories   = []
     st.session_state.sort_by               = "Name A→Z"
     st.session_state.active_tag_filters    = []
@@ -271,41 +277,9 @@ def _get_or_build_repo(file_bytes: Optional[bytes] = None) -> PromptRepository:
 
 _init_session()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
-with st.sidebar:
-    st.header("📂 Data source")
-    uploaded_file = st.file_uploader(
-        "Upload prompt library Excel",
-        type=["xlsx"],
-        help=(
-            "Upload your prompt_guide.xlsx. The app will reload prompts from this file. "
-            "Feedback (ratings, comments) is always stored in feedback.xlsx alongside the app."
-        ),
-    )
-    file_bytes: Optional[bytes] = uploaded_file.read() if uploaded_file else None
-
-    if uploaded_file:
-        st.success(f"Using: {uploaded_file.name}")
-    else:
-        default_exists = Path(APP_CONFIG.default_excel_path).exists()
-        if default_exists:
-            st.info(f"Using: {APP_CONFIG.default_excel_path}")
-        else:
-            if APP_CONFIG.enable_seed_data:
-                st.warning("No Excel file found — showing sample prompts.")
-            else:
-                st.error(
-                    "No Excel file found. Upload a file above or place "
-                    f"`{APP_CONFIG.default_excel_path}` next to this script."
-                )
-
-    st.divider()
-    st.caption(f"Session: `{st.session_state.session_id[:8]}…`")
-
 # ── Build repo and service ────────────────────────────────────────────────────
 
-repo    = _get_or_build_repo(file_bytes)
+repo    = _get_or_build_repo()
 service = PromptService(repo, APP_CONFIG)
 
 # ── Duplicate ID warning ──────────────────────────────────────────────────────
@@ -321,7 +295,7 @@ if repo.duplicate_ids:
 
 st.title("Banking Analytics Prompt Library")
 
-tab_library, tab_history, tab_about = st.tabs(["Prompt Library", "History", "About"])
+tab_library, tab_about = st.tabs(["Prompt Library", "About"])
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -368,37 +342,6 @@ with tab_about:
     )
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB: History
-# ════════════════════════════════════════════════════════════════════════════════
-
-with tab_history:
-    st.subheader("Filled prompt history")
-    st.caption(
-        "Every time you click **Save to History** in the builder, an entry is appended here "
-        "and persisted to `feedback.xlsx`."
-    )
-
-    history_rows = service.get_history()
-    if not history_rows:
-        st.info("No history yet. Fill placeholders in a prompt and click 'Save to History'.")
-    else:
-        import pandas as pd
-        hist_df = pd.DataFrame(history_rows)
-        st.dataframe(
-            hist_df,
-            use_container_width=True,
-            hide_index=True,
-            column_order=["Prompt ID", "Prompt Name", "Filled Values", "Created At", "Session ID"],
-        )
-        csv_bytes = hist_df.to_csv(index=False).encode()
-        st.download_button(
-            "⬇ Export history CSV",
-            data=csv_bytes,
-            file_name="prompt_history.csv",
-            mime="text/csv",
-        )
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB: Prompt Library
@@ -408,7 +351,7 @@ with tab_library:
 
     if not repo.list_all():
         st.info(
-            "No prompts loaded. Upload an Excel file in the sidebar or set "
+            "No prompts loaded. Place `prompt_guide.xlsx` next to this script or set "
             "`ENABLE_SEED_DATA=true` to see sample prompts."
         )
         st.stop()
@@ -420,34 +363,25 @@ with tab_library:
         unsafe_allow_html=True,
     )
 
-    # ── Search, sort, category row ────────────────────────────────────────────
+    # ── Sort + category row ───────────────────────────────────────────────────
 
-    search_col, sort_col = st.columns([3, 1])
-    with search_col:
-        search_input = st.text_input(
-            "Search",
-            value=st.session_state.search_text,
-            placeholder="Search name, tag, category, or prompt content (space-separated tokens)",
-        )
+    sort_col, cat_col = st.columns([1, 3])
     with sort_col:
         sort_by = st.selectbox(
             "Sort by",
             options=SORT_OPTIONS,
             index=SORT_OPTIONS.index(st.session_state.sort_by),
         )
+    with cat_col:
+        all_categories = repo.categories()
+        selected_categories: List[str] = st.multiselect(
+            "Filter by category",
+            options=all_categories,
+            default=st.session_state.selected_categories,
+            placeholder="All categories",
+        )
 
-    all_categories = repo.categories()
-    selected_categories: List[str] = st.multiselect(
-        "Filter by category",
-        options=all_categories,
-        default=st.session_state.selected_categories,
-        placeholder="All categories",
-    )
-
-    # Sync search/filter state
-    if search_input != st.session_state.search_text:
-        st.session_state.search_text  = search_input
-        st.session_state.current_page = 1
+    # Sync filter state
     if sorted(selected_categories) != sorted(st.session_state.selected_categories):
         st.session_state.selected_categories = selected_categories
         st.session_state.current_page = 1
@@ -455,10 +389,10 @@ with tab_library:
         st.session_state.sort_by      = sort_by
         st.session_state.current_page = 1
 
-    # ── Search ────────────────────────────────────────────────────────────────
+    # ── Filter ────────────────────────────────────────────────────────────────
 
     page_results, total_count = repo.search(
-        search_text=st.session_state.search_text,
+        search_text="",
         categories=st.session_state.selected_categories if st.session_state.selected_categories else None,
         sort_by=st.session_state.sort_by,
         page=st.session_state.current_page,
@@ -467,7 +401,7 @@ with tab_library:
 
     # For export we need all matching results (not just the current page)
     all_results, _ = repo.search(
-        search_text=st.session_state.search_text,
+        search_text="",
         categories=st.session_state.selected_categories if st.session_state.selected_categories else None,
         sort_by=st.session_state.sort_by,
         page=1,
@@ -564,8 +498,6 @@ with tab_library:
                     st.session_state.active_tag_filters.remove(clicked_tag)
                 else:
                     st.session_state.active_tag_filters.append(clicked_tag)
-                # Apply tag as search token
-                st.session_state.search_text  = clicked_tag
                 st.session_state.current_page = 1
                 st.rerun()
         else:
@@ -603,6 +535,7 @@ with tab_library:
             height=220,
             key="prompt_view_area",
             label_visibility="collapsed",
+            disabled=True,
         )
         render_copy_button(
             text=detail["prompt_template"],
